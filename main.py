@@ -17,7 +17,7 @@ from pathlib import Path
 
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2-vision:11b")
-ANSWER_FILE_NAME = os.environ.get("ANSWER_FILE_NAME", "answer.txt")
+ANSWER_FILE_NAME = os.environ.get("ANSWER_FILE_NAME", "main.txt")
 
 WEB_SITE_LIMIT = int(os.environ.get("WEB_SITE_LIMIT", "10"))
 WEB_SEARCH_CANDIDATES = int(os.environ.get("WEB_SEARCH_CANDIDATES", "25"))
