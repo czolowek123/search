@@ -12,7 +12,7 @@ import re
 import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
-from typing import Iterable
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 
 DEFAULT_TIMEOUT = 10
@@ -46,13 +46,13 @@ def _extract_duckduckgo_target_url(href: str) -> str:
 class _DuckDuckGoHtmlParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
-        self.results: list[dict[str, str]] = []
+        self.results: List[Dict[str, str]] = []
         self._current_href = ""
-        self._current_title_parts: list[str] = []
-        self._current_snippet_parts: list[str] = []
+        self._current_title_parts: List[str] = []
+        self._current_snippet_parts: List[str] = []
         self._snippet_depth = 0
 
-    def handle_starttag(self, tag: str, attrs: Iterable[tuple[str, str | None]]) -> None:
+    def handle_starttag(self, tag: str, attrs: Iterable[Tuple[str, Optional[str]]]) -> None:
         attrs_dict = {name: value or "" for name, value in attrs}
         class_name = attrs_dict.get("class", "")
         href = attrs_dict.get("href", "")
@@ -113,11 +113,11 @@ class DDGS:
     def text(
         self,
         query: str,
-        max_results: int | None = None,
-        region: str | None = None,
-        safesearch: str | None = None,
+        max_results: Optional[int] = None,
+        region: Optional[str] = None,
+        safesearch: Optional[str] = None,
         **_: object,
-    ) -> list[dict[str, str]]:
+    ) -> List[Dict[str, str]]:
         params = {"q": query}
         if region:
             params["kl"] = region
@@ -144,8 +144,8 @@ class DDGS:
         parser = _DuckDuckGoHtmlParser()
         parser.feed(html)
 
-        unique_results: list[dict[str, str]] = []
-        seen_urls: set[str] = set()
+        unique_results: List[Dict[str, str]] = []
+        seen_urls: Set[str] = set()
         limit = max_results or 10
 
         for result in parser.results:
@@ -159,8 +159,15 @@ class DDGS:
 
         return unique_results
 
-    def news(self, query: str, max_results: int | None = None, **kwargs: object) -> list[dict[str, str]]:
-        results = self.text(query, max_results=max_results, **kwargs)
+    def news(
+        self,
+        query: str,
+        max_results: Optional[int] = None,
+        region: Optional[str] = None,
+        safesearch: Optional[str] = None,
+        **_: object,
+    ) -> List[Dict[str, str]]:
+        results = self.text(query, max_results=max_results, region=region, safesearch=safesearch)
         return [
             {
                 "url": result.get("href", ""),
@@ -171,8 +178,15 @@ class DDGS:
             for result in results
         ]
 
-    def images(self, query: str, max_results: int | None = None, **kwargs: object) -> list[dict[str, str]]:
-        results = self.text(query, max_results=max_results, **kwargs)
+    def images(
+        self,
+        query: str,
+        max_results: Optional[int] = None,
+        region: Optional[str] = None,
+        safesearch: Optional[str] = None,
+        **_: object,
+    ) -> List[Dict[str, str]]:
+        results = self.text(query, max_results=max_results, region=region, safesearch=safesearch)
         return [
             {
                 "url": result.get("href", ""),
