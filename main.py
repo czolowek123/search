@@ -185,9 +185,13 @@ def normalize_name_for_match(text: str) -> str:
 
 
 def source_mentions_subject(subject: str, source: WebSource) -> bool:
-    normalized_subject = normalize_name_for_match(subject)
+    normalized_variants = [
+        normalize_name_for_match(variant)
+        for variant in name_variants(subject)
+    ]
+    normalized_variants = [variant for variant in normalized_variants if variant]
 
-    if not normalized_subject:
+    if not normalized_variants:
         return True
 
     searchable_text = " ".join(
@@ -199,19 +203,21 @@ def source_mentions_subject(subject: str, source: WebSource) -> bool:
     )
     normalized_text = normalize_name_for_match(searchable_text)
 
-    if normalized_subject in normalized_text:
-        return True
+    for normalized_subject in normalized_variants:
+        subject_words = normalized_subject.split()
 
-    subject_words = normalized_subject.split()
-    text_words = set(normalized_text.split())
+        if len(subject_words) >= 2:
+            # For full names, require adjacent words. This rejects "Jeffrey Dean Morgan"
+            # when the user asked for "Jeffrey Morgan".
+            if re.search(rf"\b{re.escape(normalized_subject)}\b", normalized_text):
+                return True
+            continue
 
-    if len(subject_words) < 2:
-        return any(edit_distance_is_close(subject_words[0], word) for word in text_words)
+        text_words = set(normalized_text.split())
+        if subject_words and any(edit_distance_is_close(subject_words[0], word) for word in text_words):
+            return True
 
-    return all(
-        any(edit_distance_is_close(subject_word, text_word) for text_word in text_words)
-        for subject_word in subject_words
-    )
+    return False
 
 
 def question_context_terms(question: str) -> str:
