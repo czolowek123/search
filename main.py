@@ -101,14 +101,47 @@ def is_who_question(query: str) -> bool:
     return bool(re.search(r"\b(?:кто|who)\b", query_lower)) or "кто такой" in query_lower
 
 
+def extract_who_subject(question: str) -> str:
+    query = normalize_space(question)
+    who_match = re.search(r"(?:кто\s+так(?:ой|ая|ие)|who\s+is)\s+(.+)", query, re.IGNORECASE)
+
+    if who_match:
+        return who_match.group(1).strip(" ?!.,")
+
+    return ""
+
+
+def normalize_name_for_match(text: str) -> str:
+    text = html.unescape(text or "").lower().replace("ё", "е")
+    text = re.sub(r"[^а-яa-z0-9]+", " ", text)
+    return normalize_space(text)
+
+
+def source_mentions_exact_subject(subject: str, source: WebSource) -> bool:
+    normalized_subject = normalize_name_for_match(subject)
+
+    if not normalized_subject:
+        return True
+
+    searchable_text = " ".join(
+        [
+            source.title,
+            source.url.replace("-", " ").replace("_", " "),
+            source.text[:5000],
+        ]
+    )
+    normalized_text = normalize_name_for_match(searchable_text)
+
+    return normalized_subject in normalized_text
+
+
 def build_search_query(question: str) -> str:
     query = normalize_space(question)
 
-    who_match = re.search(r"(?:кто\s+так(?:ой|ая|ие)|who\s+is)\s+(.+)", query, re.IGNORECASE)
-    if who_match:
-        subject = who_match.group(1).strip(" ?!.,")
+    if is_who_question(query):
+        subject = extract_who_subject(query)
         if subject:
-            return f"who is {subject} biography"
+            return f'"{subject}" biography'
 
     return query
 
@@ -395,6 +428,11 @@ def collect_sources(question: str) -> list[WebSource]:
                 print("    пропуск: нет читаемого текста")
                 continue
 
+            subject = extract_who_subject(question) if is_who_question(question) else ""
+            if subject and not source_mentions_exact_subject(subject, source):
+                print(f"    пропуск: источник не про точное имя «{subject}»")
+                continue
+
             sources.append(source)
             print(f"    готово: {len(source.text)} символов текста")
 
@@ -433,9 +471,12 @@ def build_answer_rules(question: str) -> str:
     question_lower = question.lower()
 
     if is_who_question(question):
+        subject = extract_who_subject(question)
         return (
             "Для вопроса 'кто это' дай 4-7 предложений: полное имя, профессия, чем известен, "
-            "важные роли/работы или факты. Не ограничивайся одним именем."
+            "важные роли/работы или факты. Не ограничивайся одним именем. "
+            f"Отвечай только о человеке с точным именем «{subject}». "
+            "Не заменяй его на другого более популярного человека и не исправляй имя сам."
         )
 
     if any(word in question_lower for word in ("сравни", "лучше", "или", "vs", "против")):
@@ -557,8 +598,21 @@ def main() -> int:
         return 1
 
     if not sources:
-        print("Не получилось собрать текст с сайтов.")
-        return 1
+        subject = extract_who_subject(question) if is_who_question(question) else ""
+        if subject:
+            answer = (
+                f"Я не нашёл надёжных источников именно по точному имени «{subject}». "
+                "Чтобы не заменить человека на более популярного однофамильца, я не буду отвечать про другого человека. "
+                "Попробуй уточнить имя, профессию, страну или добавить ссылку/контекст."
+            )
+        else:
+            answer = "Не получилось собрать текст с сайтов по этому запросу."
+
+        answer_file_path = write_answer_to_file(question, answer, [])
+        print(answer)
+        print("\nОтвет записан в файл:")
+        print(answer_file_path)
+        return 0
 
     print(f"Собрано сайтов: {len(sources)}. Отправляю текст в Ollama {OLLAMA_MODEL}...")
     prompt = build_ollama_prompt(question, sources)
