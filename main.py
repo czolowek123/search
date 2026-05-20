@@ -10,6 +10,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
@@ -21,9 +22,12 @@ ANSWER_FILE_NAME = os.environ.get("ANSWER_FILE_NAME", "answer.txt")
 
 WEB_SITE_LIMIT = int(os.environ.get("WEB_SITE_LIMIT", "10"))
 WEB_SEARCH_CANDIDATES = int(os.environ.get("WEB_SEARCH_CANDIDATES", "25"))
-WEB_REQUEST_TIMEOUT = int(os.environ.get("WEB_REQUEST_TIMEOUT", "12"))
+WEB_REQUEST_TIMEOUT = int(os.environ.get("WEB_REQUEST_TIMEOUT", "8"))
 WEB_SOURCE_TEXT_LIMIT = int(os.environ.get("WEB_SOURCE_TEXT_LIMIT", "12000"))
-OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", "240"))
+PROMPT_SOURCE_TEXT_LIMIT = int(os.environ.get("PROMPT_SOURCE_TEXT_LIMIT", "1200"))
+OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", "180"))
+OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "220"))
+OLLAMA_TEMPERATURE = float(os.environ.get("OLLAMA_TEMPERATURE", "0.2"))
 
 WEB_USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) "
@@ -47,6 +51,84 @@ class WebSource:
 
 def normalize_space(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
+
+
+def split_sentences(text: str) -> list[str]:
+    parts = re.split(r"(?<=[.!?;:])\s+", normalize_space(text))
+    return [part.strip() for part in parts if len(part.strip()) >= 40]
+
+
+def query_keywords(query: str) -> set[str]:
+    stop_words = {
+        "что",
+        "как",
+        "какой",
+        "какая",
+        "какие",
+        "какое",
+        "сколько",
+        "почему",
+        "где",
+        "когда",
+        "или",
+        "для",
+        "при",
+        "про",
+        "это",
+        "его",
+        "она",
+        "они",
+        "the",
+        "and",
+        "for",
+        "with",
+        "what",
+        "how",
+        "why",
+        "where",
+        "when",
+    }
+    words = re.findall(r"[а-яёa-z0-9]+", query.lower())
+    return {word for word in words if len(word) >= 3 and word not in stop_words}
+
+
+def build_relevant_excerpt(text: str, query: str, max_chars: int = PROMPT_SOURCE_TEXT_LIMIT) -> str:
+    sentences = split_sentences(text)
+    if not sentences:
+        return text[:max_chars]
+
+    keywords = query_keywords(query)
+    scored_sentences: list[tuple[int, int, str]] = []
+
+    for index, sentence in enumerate(sentences):
+        sentence_lower = sentence.lower()
+        score = sum(1 for keyword in keywords if keyword in sentence_lower)
+
+        if re.search(r"\d", sentence):
+            score += 1
+
+        if any(word in sentence_lower for word in ("средн", "норм", "рост", "возраст", "мальчик", "таблиц")):
+            score += 2
+
+        scored_sentences.append((score, -index, sentence))
+
+    best_sentences = [
+        sentence
+        for score, _, sentence in sorted(scored_sentences, reverse=True)
+        if score > 0
+    ]
+
+    if not best_sentences:
+        best_sentences = sentences[:6]
+
+    excerpt = ""
+    for sentence in best_sentences:
+        next_excerpt = (excerpt + " " + sentence).strip()
+        if len(next_excerpt) > max_chars:
+            break
+        excerpt = next_excerpt
+
+    return excerpt or text[:max_chars]
 
 
 def is_fetchable_url(url: str) -> bool:
@@ -242,23 +324,38 @@ def collect_sources(question: str) -> list[WebSource]:
     search_results = search_web(question)
     sources: list[WebSource] = []
 
-    for index, result in enumerate(search_results, start=1):
-        if len(sources) >= WEB_SITE_LIMIT:
-            break
+    if not search_results:
+        return sources
 
-        print(f"[{index}] Читаю: {result.url}")
-        try:
-            source = read_web_page(result)
-        except Exception as exc:
-            print(f"    пропуск: {exc}")
-            continue
+    candidates = search_results[:WEB_SITE_LIMIT]
+    workers = min(10, len(candidates))
 
-        if not source:
-            print("    пропуск: нет читаемого текста")
-            continue
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_result = {
+            executor.submit(read_web_page, result): result
+            for result in candidates
+        }
 
-        sources.append(source)
-        print(f"    готово: {len(source.text)} символов текста")
+        for future in as_completed(future_to_result):
+            result = future_to_result[future]
+
+            if len(sources) >= WEB_SITE_LIMIT:
+                break
+
+            print(f"Читаю: {result.url}")
+
+            try:
+                source = future.result()
+            except Exception as exc:
+                print(f"    пропуск: {exc}")
+                continue
+
+            if not source:
+                print("    пропуск: нет читаемого текста")
+                continue
+
+            sources.append(source)
+            print(f"    готово: {len(source.text)} символов текста")
 
     return sources
 
@@ -267,22 +364,26 @@ def build_ollama_prompt(question: str, sources: list[WebSource]) -> str:
     source_blocks: list[str] = []
 
     for index, source in enumerate(sources, start=1):
+        excerpt = build_relevant_excerpt(source.text, question)
         source_blocks.append(
             f"Источник {index}: {source.title}\n"
             f"URL: {source.url}\n"
-            f"Текст:\n{source.text}"
+            f"Важные фрагменты текста:\n{excerpt}"
         )
 
     joined_sources = "\n\n---\n\n".join(source_blocks)
 
     return (
-        "Ты анализируешь информацию из интернета и отвечаешь кратко по-русски.\n"
-        "Используй только данные из источников ниже. Если данных мало, честно скажи об этом.\n"
-        "Ответ должен быть коротким: 5-10 предложений максимум.\n"
-        "Если вопрос про сравнение, дай понятный вывод: что лучше и почему.\n\n"
+        "Ты отвечаешь как точный помощник-аналитик.\n"
+        "Используй только факты из источников ниже.\n"
+        "Сначала дай прямой короткий ответ на вопрос.\n"
+        "Потом добавь 2-5 предложений объяснения.\n"
+        "Если в источниках есть числа, диапазоны, возраст, даты или характеристики, обязательно используй их.\n"
+        "Не пиши длинное вступление и не пересказывай все сайты.\n"
+        "Если данных недостаточно, скажи это коротко и укажи, что можно проверить дополнительно.\n\n"
         f"Вопрос пользователя:\n{question}\n\n"
-        f"Источники ({len(sources)} сайтов):\n{joined_sources}\n\n"
-        "Сделай краткий итоговый ответ."
+        f"Фрагменты из источников ({len(sources)} сайтов):\n{joined_sources}\n\n"
+        "Ответь кратко и по делу."
     )
 
 
@@ -291,6 +392,11 @@ def ask_ollama(prompt: str) -> str:
         "model": OLLAMA_MODEL,
         "prompt": prompt,
         "stream": False,
+        "options": {
+            "temperature": OLLAMA_TEMPERATURE,
+            "num_predict": OLLAMA_NUM_PREDICT,
+            "top_p": 0.9,
+        },
     }
 
     request = urllib.request.Request(
