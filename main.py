@@ -101,14 +101,81 @@ def is_who_question(query: str) -> bool:
     return bool(re.search(r"\b(?:кто|who)\b", query_lower)) or "кто такой" in query_lower
 
 
-def extract_who_subject(question: str) -> str:
+def split_who_subject_and_context(question: str) -> tuple[str, str]:
     query = normalize_space(question)
     who_match = re.search(r"(?:кто\s+так(?:ой|ая|ие)|who\s+is)\s+(.+)", query, re.IGNORECASE)
 
-    if who_match:
-        return who_match.group(1).strip(" ?!.,")
+    if not who_match:
+        return "", ""
 
-    return ""
+    tail = who_match.group(1).strip(" ?!.,")
+    context_match = re.search(
+        r"\s+\b(?:и|а|что|чем|где|когда|почему|как|and|what|where|when|why|how)\b.*",
+        tail,
+        re.IGNORECASE,
+    )
+
+    if not context_match:
+        return tail, ""
+
+    subject = tail[:context_match.start()].strip(" ?!.,")
+    context = tail[context_match.start():].strip(" ?!.,")
+    return subject, context
+
+
+def extract_who_subject(question: str) -> str:
+    subject, _ = split_who_subject_and_context(question)
+    return subject
+
+
+def extract_who_context(question: str) -> str:
+    _, context = split_who_subject_and_context(question)
+    return context
+
+
+def name_variants(subject: str) -> list[str]:
+    variants = [normalize_space(subject)]
+    common_fixes = {
+        "jefferey": "jeffrey",
+        "jeferrey": "jeffrey",
+        "jeffery": "jeffrey",
+        "micheal": "michael",
+    }
+
+    lowered = subject.lower()
+    for wrong, right in common_fixes.items():
+        if wrong in lowered:
+            fixed = re.sub(wrong, right, subject, flags=re.IGNORECASE)
+            if subject[:1].isupper():
+                fixed = fixed[:1].upper() + fixed[1:]
+            variants.append(normalize_space(fixed))
+
+    unique_variants: list[str] = []
+    for variant in variants:
+        if variant and variant.lower() not in [item.lower() for item in unique_variants]:
+            unique_variants.append(variant)
+
+    return unique_variants
+
+
+def edit_distance_is_close(a: str, b: str) -> bool:
+    if a == b:
+        return True
+
+    if abs(len(a) - len(b)) > 2:
+        return False
+
+    previous = list(range(len(b) + 1))
+    for index_a, char_a in enumerate(a, start=1):
+        current = [index_a]
+        for index_b, char_b in enumerate(b, start=1):
+            insert_cost = current[index_b - 1] + 1
+            delete_cost = previous[index_b] + 1
+            replace_cost = previous[index_b - 1] + (char_a != char_b)
+            current.append(min(insert_cost, delete_cost, replace_cost))
+        previous = current
+
+    return previous[-1] <= 2
 
 
 def normalize_name_for_match(text: str) -> str:
@@ -117,7 +184,7 @@ def normalize_name_for_match(text: str) -> str:
     return normalize_space(text)
 
 
-def source_mentions_exact_subject(subject: str, source: WebSource) -> bool:
+def source_mentions_subject(subject: str, source: WebSource) -> bool:
     normalized_subject = normalize_name_for_match(subject)
 
     if not normalized_subject:
@@ -132,18 +199,81 @@ def source_mentions_exact_subject(subject: str, source: WebSource) -> bool:
     )
     normalized_text = normalize_name_for_match(searchable_text)
 
-    return normalized_subject in normalized_text
+    if normalized_subject in normalized_text:
+        return True
+
+    subject_words = normalized_subject.split()
+    text_words = set(normalized_text.split())
+
+    if len(subject_words) < 2:
+        return any(edit_distance_is_close(subject_words[0], word) for word in text_words)
+
+    return all(
+        any(edit_distance_is_close(subject_word, text_word) for text_word in text_words)
+        for subject_word in subject_words
+    )
 
 
-def build_search_query(question: str) -> str:
+def question_context_terms(question: str) -> str:
+    context = extract_who_context(question) if is_who_question(question) else question
+    context_lower = context.lower()
+    terms: list[str] = []
+
+    if any(word in context_lower for word in ("создал", "создатель", "основал", "основатель", "created", "creator", "founded", "founder")):
+        terms.extend(["created", "creator", "founder", "founded"])
+
+    if any(word in context_lower for word in ("ollama", "оллама")):
+        terms.append("ollama")
+
+    if any(word in context_lower for word in ("90b", "90 b", "90-б")):
+        terms.append("90B")
+
+    return " ".join(terms)
+
+
+def source_matches_question_context(question: str, source: WebSource) -> bool:
+    if not is_who_question(question):
+        return True
+
+    context_terms = question_context_terms(question).split()
+    if not context_terms:
+        return True
+
+    searchable_text = normalize_name_for_match(
+        " ".join([source.title, source.url.replace("-", " "), source.text[:8000]])
+    )
+
+    creation_terms = {"created", "creator", "founder", "founded", "создал", "создатель", "основал", "основатель", "ollama", "90b"}
+
+    if any(term.lower() in creation_terms for term in context_terms):
+        return any(term in searchable_text for term in creation_terms)
+
+    return True
+
+
+def build_search_queries(question: str) -> list[str]:
     query = normalize_space(question)
 
     if is_who_question(query):
         subject = extract_who_subject(query)
         if subject:
-            return f'"{subject}" biography'
+            context_terms = question_context_terms(query)
+            queries: list[str] = []
 
-    return query
+            for variant in name_variants(subject):
+                quoted_variant = f'"{variant}"'
+                queries.append(f"{quoted_variant} wikipedia biography {context_terms}".strip())
+                queries.append(f"{quoted_variant} {context_terms}".strip())
+                queries.append(f"{variant} biography {context_terms}".strip())
+
+            unique_queries: list[str] = []
+            for item in queries:
+                if item and item.lower() not in [existing.lower() for existing in unique_queries]:
+                    unique_queries.append(item)
+
+            return unique_queries
+
+    return [query]
 
 
 def build_relevant_excerpt(text: str, query: str, max_chars: int = PROMPT_SOURCE_TEXT_LIMIT) -> str:
@@ -350,20 +480,24 @@ def request_url_text(url: str) -> str:
 
 
 def search_web(query: str) -> list[SearchResult]:
-    search_url = "https://duckduckgo.com/html/?" + urllib.parse.urlencode({"q": build_search_query(query)})
-    page_html = request_url_text(search_url)
-    parser = DuckDuckGoResultParser()
-    parser.feed(page_html)
-
     unique_results: list[SearchResult] = []
     seen_urls: set[str] = set()
 
-    for result in parser.results:
-        if result.url in seen_urls:
-            continue
+    for search_query in build_search_queries(query):
+        search_url = "https://duckduckgo.com/html/?" + urllib.parse.urlencode({"q": search_query})
+        page_html = request_url_text(search_url)
+        parser = DuckDuckGoResultParser()
+        parser.feed(page_html)
 
-        seen_urls.add(result.url)
-        unique_results.append(result)
+        for result in parser.results:
+            if result.url in seen_urls:
+                continue
+
+            seen_urls.add(result.url)
+            unique_results.append(result)
+
+            if len(unique_results) >= WEB_SEARCH_CANDIDATES:
+                break
 
         if len(unique_results) >= WEB_SEARCH_CANDIDATES:
             break
@@ -429,8 +563,12 @@ def collect_sources(question: str) -> list[WebSource]:
                 continue
 
             subject = extract_who_subject(question) if is_who_question(question) else ""
-            if subject and not source_mentions_exact_subject(subject, source):
+            if subject and not source_mentions_subject(subject, source):
                 print(f"    пропуск: источник не про точное имя «{subject}»")
+                continue
+
+            if not source_matches_question_context(question, source):
+                print("    пропуск: источник не отвечает на уточнение вопроса")
                 continue
 
             sources.append(source)
