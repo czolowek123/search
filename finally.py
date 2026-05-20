@@ -2,8 +2,8 @@
 # Версия 4.0.0 | 10000+ строк
 # Используется: start.py, main.py
 # НЕ ПЕРЕИМЕНОВЫВАТЬ
-import gg as gg_mod
 from __future__ import annotations
+import gg as gg_mod
 import re, os, sys, time, math, json, hashlib
 from datetime import datetime
 from typing import Optional
@@ -1151,9 +1151,8 @@ def word_frequency_analysis(text: str) -> dict:
     for w in words:
         freq[w] = freq.get(w, 0) + 1
     # Убираем стоп-слова
-    from gg_mod import STOPWORDS_RU, STOPWORDS_EN
     freq = {w: c for w, c in freq.items()
-            if w not in STOPWORDS_RU and w not in STOPWORDS_EN}
+            if w not in gg_mod.STOPWORDS_RU and w not in gg_mod.STOPWORDS_EN}
     return dict(sorted(freq.items(), key=lambda x: x[1], reverse=True))
 
 def top_keywords(text: str, n: int = 10) -> list:
