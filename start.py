@@ -260,11 +260,12 @@ def format_number(n: float) -> str:
 
 def format_bytes(b: int) -> str:
     """Форматирует размер файла."""
+    size = float(b)
     for unit in ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ']:
-        if abs(b) < 1024:
-            return f"{b:.1f} {unit}"
-        b /= 1024
-    return f"{b:.1f} ПБ"
+        if abs(size) < 1024:
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} ПБ"
 
 def format_percentage(value: float, total: float) -> str:
     """Форматирует процент."""
@@ -541,7 +542,11 @@ class AISession:
 
     def ask(self, query: str, S, G, F, verbose: bool = True) -> str:
         """Задаёт вопрос и записывает результат в статистику."""
-        from main import process_one
+        import main as main_module
+
+        process_one = getattr(main_module, "process_one", None)
+        if process_one is None:
+            raise RuntimeError("main.process_one is not available")
         t = Timer()
         t.start()
         answer = process_one(query, S=S, G=G, F=F, verbose=verbose)

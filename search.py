@@ -6,10 +6,15 @@
 from __future__ import annotations
 import os, sys, re, time, random, hashlib, json, math
 import urllib.parse, urllib.request, html
-from typing import Optional
+from typing import Any, Optional
+
+requests: Any = None
+BeautifulSoup: Any = None
 try:
-    import requests
-    from bs4 import BeautifulSoup
+    import requests as _requests
+    from bs4 import BeautifulSoup as _BeautifulSoup  # type: ignore[reportMissingImports]
+    requests = _requests
+    BeautifulSoup = _BeautifulSoup
     HAS_REQUESTS = True
 except ImportError:
     HAS_REQUESTS = False

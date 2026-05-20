@@ -1450,7 +1450,7 @@ def weighted_question_classify(query: str) -> str:
         for qtype, weights in QUESTION_KEYWORD_WEIGHTS.items():
             if word in weights:
                 type_scores[qtype] += weights[word]
-    best_type = max(type_scores, key=type_scores.get)
+    best_type = max(type_scores, key=lambda qtype: type_scores[qtype])
     if type_scores[best_type] > 0:
         return best_type
     return "what"
@@ -1593,7 +1593,7 @@ def get_main_entity(text: str, query: str) -> str:
         score = count * 0.5 + overlap * 2.0
         entity_counts[ent] = score
     if entity_counts:
-        best_entity = max(entity_counts, key=entity_counts.get)
+        best_entity = max(entity_counts, key=lambda ent: entity_counts[ent])
     return best_entity
 
 # ════════════════════════════════════════════════════════════

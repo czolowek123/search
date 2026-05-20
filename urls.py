@@ -100,7 +100,7 @@ class _DuckDuckGoResultParser(HTMLParser):
         self._current_text_parts = []
 
     def handle_starttag(self, tag, attrs):
-        attrs_dict = dict(attrs)
+        attrs_dict = {name: value or '' for name, value in attrs}
         href = attrs_dict.get('href', '')
         class_name = attrs_dict.get('class', '')
 
