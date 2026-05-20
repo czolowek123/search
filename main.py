@@ -26,7 +26,7 @@ WEB_REQUEST_TIMEOUT = int(os.environ.get("WEB_REQUEST_TIMEOUT", "8"))
 WEB_SOURCE_TEXT_LIMIT = int(os.environ.get("WEB_SOURCE_TEXT_LIMIT", "12000"))
 PROMPT_SOURCE_TEXT_LIMIT = int(os.environ.get("PROMPT_SOURCE_TEXT_LIMIT", "1200"))
 OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", "180"))
-OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "220"))
+OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "420"))
 OLLAMA_TEMPERATURE = float(os.environ.get("OLLAMA_TEMPERATURE", "0.2"))
 
 WEB_USER_AGENT = (
@@ -67,6 +67,10 @@ def query_keywords(query: str) -> set[str]:
         "какие",
         "какое",
         "сколько",
+        "кто",
+        "такой",
+        "такая",
+        "такие",
         "почему",
         "где",
         "когда",
@@ -92,6 +96,23 @@ def query_keywords(query: str) -> set[str]:
     return {word for word in words if len(word) >= 3 and word not in stop_words}
 
 
+def is_who_question(query: str) -> bool:
+    query_lower = query.lower()
+    return bool(re.search(r"\b(?:кто|who)\b", query_lower)) or "кто такой" in query_lower
+
+
+def build_search_query(question: str) -> str:
+    query = normalize_space(question)
+
+    who_match = re.search(r"(?:кто\s+так(?:ой|ая|ие)|who\s+is)\s+(.+)", query, re.IGNORECASE)
+    if who_match:
+        subject = who_match.group(1).strip(" ?!.,")
+        if subject:
+            return f"who is {subject} biography"
+
+    return query
+
+
 def build_relevant_excerpt(text: str, query: str, max_chars: int = PROMPT_SOURCE_TEXT_LIMIT) -> str:
     sentences = split_sentences(text)
     if not sentences:
@@ -106,6 +127,26 @@ def build_relevant_excerpt(text: str, query: str, max_chars: int = PROMPT_SOURCE
 
         if re.search(r"\d", sentence):
             score += 1
+
+        if is_who_question(query) and any(
+            word in sentence_lower
+            for word in (
+                "родился",
+                "актёр",
+                "актер",
+                "известен",
+                "сыграл",
+                "фильм",
+                "сериал",
+                "биограф",
+                "actor",
+                "known",
+                "born",
+                "film",
+                "series",
+            )
+        ):
+            score += 2
 
         if any(word in sentence_lower for word in ("средн", "норм", "рост", "возраст", "мальчик", "таблиц")):
             score += 2
@@ -276,7 +317,7 @@ def request_url_text(url: str) -> str:
 
 
 def search_web(query: str) -> list[SearchResult]:
-    search_url = "https://duckduckgo.com/html/?" + urllib.parse.urlencode({"q": query})
+    search_url = "https://duckduckgo.com/html/?" + urllib.parse.urlencode({"q": build_search_query(query)})
     page_html = request_url_text(search_url)
     parser = DuckDuckGoResultParser()
     parser.feed(page_html)
@@ -372,19 +413,41 @@ def build_ollama_prompt(question: str, sources: list[WebSource]) -> str:
         )
 
     joined_sources = "\n\n---\n\n".join(source_blocks)
+    answer_rules = build_answer_rules(question)
 
     return (
         "Ты отвечаешь как точный помощник-аналитик.\n"
         "Используй только факты из источников ниже.\n"
-        "Сначала дай прямой короткий ответ на вопрос.\n"
-        "Потом добавь 2-5 предложений объяснения.\n"
+        "Не отвечай обрывком или одним именем, если вопрос требует объяснения.\n"
+        f"{answer_rules}\n"
         "Если в источниках есть числа, диапазоны, возраст, даты или характеристики, обязательно используй их.\n"
-        "Не пиши длинное вступление и не пересказывай все сайты.\n"
+        "Не пиши длинное вступление и не пересказывай все сайты подряд.\n"
         "Если данных недостаточно, скажи это коротко и укажи, что можно проверить дополнительно.\n\n"
         f"Вопрос пользователя:\n{question}\n\n"
         f"Фрагменты из источников ({len(sources)} сайтов):\n{joined_sources}\n\n"
-        "Ответь кратко и по делу."
+        "Ответь по делу, но достаточно полно для этого вопроса."
     )
+
+
+def build_answer_rules(question: str) -> str:
+    question_lower = question.lower()
+
+    if is_who_question(question):
+        return (
+            "Для вопроса 'кто это' дай 4-7 предложений: полное имя, профессия, чем известен, "
+            "важные роли/работы или факты. Не ограничивайся одним именем."
+        )
+
+    if any(word in question_lower for word in ("сравни", "лучше", "или", "vs", "против")):
+        return (
+            "Для сравнения дай вывод в первом предложении, затем 3-6 предложений с причинами, "
+            "плюс когда лучше выбрать каждый вариант."
+        )
+
+    if any(word in question_lower for word in ("почему", "как работает", "объясни")):
+        return "Для объяснения дай 5-8 понятных предложений с причиной и простым примером, если он уместен."
+
+    return "Дай прямой ответ и 2-5 предложений пояснения."
 
 
 def ask_ollama(prompt: str) -> str:
@@ -410,6 +473,30 @@ def ask_ollama(prompt: str) -> str:
         data = json.loads(response.read().decode("utf-8"))
 
     return data.get("response", "").strip()
+
+
+def answer_is_too_short(question: str, answer: str) -> bool:
+    words = re.findall(r"[а-яёa-z0-9]+", answer.lower())
+
+    if is_who_question(question):
+        return len(words) < 25
+
+    return len(words) < 5
+
+
+def improve_too_short_answer(question: str, prompt: str, answer: str) -> str:
+    if not answer_is_too_short(question, answer):
+        return answer
+
+    retry_prompt = (
+        f"{prompt}\n\n"
+        "Предыдущий ответ получился слишком коротким:\n"
+        f"{answer}\n\n"
+        "Напиши заново нормальный полезный ответ. "
+        "Если вопрос про человека, обязательно объясни кто это, чем известен и приведи ключевые факты."
+    )
+    improved_answer = ask_ollama(retry_prompt)
+    return improved_answer or answer
 
 
 def get_answer_file_path() -> Path:
@@ -478,6 +565,7 @@ def main() -> int:
 
     try:
         answer = ask_ollama(prompt)
+        answer = improve_too_short_answer(question, prompt, answer)
     except urllib.error.URLError as exc:
         print("Не получилось подключиться к Ollama.")
         print("Проверь, что Ollama запущена: ollama serve")
