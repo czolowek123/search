@@ -198,7 +198,7 @@ def source_mentions_subject(subject: str, source: WebSource) -> bool:
         [
             source.title,
             source.url.replace("-", " ").replace("_", " "),
-            source.text[:5000],
+            source.text[:1200],
         ]
     )
     normalized_text = normalize_name_for_match(searchable_text)
@@ -209,6 +209,13 @@ def source_mentions_subject(subject: str, source: WebSource) -> bool:
         if len(subject_words) >= 2:
             # For full names, require adjacent words. This rejects "Jeffrey Dean Morgan"
             # when the user asked for "Jeffrey Morgan".
+            first_name = re.escape(subject_words[0])
+            last_name = re.escape(subject_words[-1])
+            middle_name_pattern = rf"\b{first_name}\s+\w+\s+{last_name}\b"
+
+            if re.search(middle_name_pattern, normalized_text):
+                return False
+
             if re.search(rf"\b{re.escape(normalized_subject)}\b", normalized_text):
                 return True
             continue
