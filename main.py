@@ -286,11 +286,11 @@ def build_ollama_prompt(question: str, sources: list[WebSource]) -> str:
     )
 
 
-def stream_ollama_answer(prompt: str):
+def ask_ollama(prompt: str) -> str:
     payload = {
         "model": OLLAMA_MODEL,
         "prompt": prompt,
-        "stream": True,
+        "stream": False,
     }
 
     request = urllib.request.Request(
@@ -301,19 +301,9 @@ def stream_ollama_answer(prompt: str):
     )
 
     with urllib.request.urlopen(request, timeout=OLLAMA_TIMEOUT) as response:
-        for raw_line in response:
-            line = raw_line.decode("utf-8", errors="ignore").strip()
-            if not line:
-                continue
+        data = json.loads(response.read().decode("utf-8"))
 
-            data = json.loads(line)
-            chunk = data.get("response", "")
-
-            if chunk:
-                yield chunk
-
-            if data.get("done"):
-                break
+    return data.get("response", "").strip()
 
 
 def get_answer_file_path() -> Path:
@@ -326,7 +316,7 @@ def get_answer_file_path() -> Path:
     return current_dir / answer_file
 
 
-def write_answer_header(question: str, sources: list[WebSource]) -> Path:
+def write_answer_to_file(question: str, answer: str, sources: list[WebSource]) -> Path:
     answer_file_path = get_answer_file_path()
     source_lines = "\n".join(
         f"{index}. {source.title}\n   {source.url}"
@@ -341,40 +331,13 @@ def write_answer_header(question: str, sources: list[WebSource]) -> Path:
         "QUESTION:\n"
         f"{question}\n\n"
         "ANSWER:\n"
-    )
-
-    answer_file_path.write_text(text, encoding="utf-8")
-    return answer_file_path
-
-
-def append_answer_footer(answer_file_path: Path, sources: list[WebSource]) -> None:
-    source_lines = "\n".join(
-        f"{index}. {source.title}\n   {source.url}"
-        for index, source in enumerate(sources, start=1)
-    )
-    text = (
-        "\n\n"
+        f"{answer}\n\n"
         "SOURCES:\n"
         f"{source_lines}\n"
     )
 
-    with answer_file_path.open("a", encoding="utf-8") as answer_file:
-        answer_file.write(text)
-
-
-def write_streaming_answer(question: str, prompt: str, sources: list[WebSource]) -> tuple[Path, str]:
-    answer_file_path = write_answer_header(question, sources)
-    answer_parts: list[str] = []
-
-    with answer_file_path.open("a", encoding="utf-8") as answer_file:
-        for chunk in stream_ollama_answer(prompt):
-            print(chunk, end="", flush=True)
-            answer_file.write(chunk)
-            answer_file.flush()
-            answer_parts.append(chunk)
-
-    append_answer_footer(answer_file_path, sources)
-    return answer_file_path, "".join(answer_parts).strip()
+    answer_file_path.write_text(text, encoding="utf-8")
+    return answer_file_path
 
 
 def get_question_from_user() -> str:
@@ -408,8 +371,7 @@ def main() -> int:
     prompt = build_ollama_prompt(question, sources)
 
     try:
-        print("\nКраткий ответ:")
-        answer_file_path, answer = write_streaming_answer(question, prompt, sources)
+        answer = ask_ollama(prompt)
     except urllib.error.URLError as exc:
         print("Не получилось подключиться к Ollama.")
         print("Проверь, что Ollama запущена: ollama serve")
@@ -422,6 +384,9 @@ def main() -> int:
     if not answer:
         answer = "Ollama вернула пустой ответ."
 
+    answer_file_path = write_answer_to_file(question, answer, sources)
+    print("\nКраткий ответ:")
+    print(answer)
     print("\nОтвет записан в файл:")
     print(answer_file_path)
     return 0
